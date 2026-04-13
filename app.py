@@ -183,6 +183,40 @@ def generate_chat_response(full_messages, model="llama-3.3-70b-versatile"):
     response = client.chat.completions.create(model=model, messages=filtered_messages)
     return response.choices[0].message.content
 
+def fetch_live_mandi_prices(crop, location):
+    try:
+        data_gov_key = st.secrets.get("DATA_GOV_API_KEY") or os.getenv("DATA_GOV_API_KEY")
+        if not data_gov_key:
+            return None
+
+        import requests
+        url = "https://api.data.gov.in/resource/9ef84268-d588-465a-a308-a864a43d0070"
+        params = {
+            "api-key": data_gov_key,
+            "format": "json",
+            "limit": 50,
+            "filters[commodity]": crop.capitalize()
+        }
+        response = requests.get(url, params=params)
+        if response.status_code == 200:
+            data = response.json()
+            records = data.get("records", [])
+            filtered = [r for r in records if location.lower() in r.get("state", "").lower() or location.lower() in r.get("district", "").lower() or location.lower() in r.get("market", "").lower()]
+            
+            if filtered:
+                result_str = f"EXACT DATA FOR {location.upper()}:\n"
+                for r in filtered[:3]:
+                    result_str += f"- Market: {r.get('market')}, Min: ₹{r.get('min_price')}, Max: ₹{r.get('max_price')}, Modal: ₹{r.get('modal_price')}/Quintal on {r.get('arrival_date')}\n"
+                return result_str
+            elif records:
+                result_str = f"Specific exact match for '{location}' wasn't found globally today, but here are general real-time rates across India:\n"
+                for r in records[:5]:
+                    result_str += f"- {r.get('state')} ({r.get('district')}): ₹{r.get('modal_price')}/Quintal\n"
+                return result_str
+        return None
+    except Exception as e:
+         return None
+
 # Initializing temporary UI Chats
 if "crop_chat" not in st.session_state: st.session_state.crop_chat = []
 if "market_chat" not in st.session_state: st.session_state.market_chat = []
@@ -296,11 +330,18 @@ with tabs[1]:
             actual_prompt = ""
             display_prompt = ""
             
+            live_data_text = None
+            if crop and location and not transcribed:
+                 live_data_text = fetch_live_mandi_prices(crop, location)
+
             if transcribed:
-                actual_prompt = f"You are an expert agricultural market analyst. A farmer spoke the following: '{transcribed}'. \nPlease identify their crop and location, and provide a realistic estimate of typical historical price trends, harvesting season market behavior, and general advice for this region. Since real-time streaming API data is unavailable, use your extensive knowledge base to provide typical price ranges."
+                actual_prompt = f"You are an expert agricultural market analyst. A farmer spoke the following: '{transcribed}'. \nPlease identify their crop and location, and provide a realistic estimate of typical historical price trends, harvesting season market behavior, and general advice for this region. Since live textual API data wasn't explicitly formatted, use your extensive knowledge base to provide typical price ranges."
                 display_prompt = f"🎤 **Voice Query:** {transcribed}"
             elif crop and location:
-                actual_prompt = f"You are an expert agricultural market analyst. A farmer is asking for recent market price trends for {crop} in {location}.\nPlease provide a realistic estimate of typical historical price trends, harvesting season market behavior, and general advice for a farmer selling this crop in this region to maximize their profits. Since real-time streaming API data is unavailable, use your extensive knowledge base to provide expert guidance and typical price ranges."
+                if live_data_text:
+                     actual_prompt = f"You are an expert agricultural market analyst. A farmer is asking for market price trends for {crop} in {location}.\nHere is the LIVE data just pulled directly from the Indian Government's Agmarknet API right now:\n\n{live_data_text}\n\nUsing this exact real-time mathematical data alongside your expert knowledge, provide a professional analysis, tell them whether it's a good price to sell based on typical seasonal rates, and give actionable pricing guidance. Format it cleanly."
+                else:
+                     actual_prompt = f"You are an expert agricultural market analyst. A farmer is asking for recent market price trends for {crop} in {location}.\nPlease provide a realistic estimate of typical historical price trends, harvesting season market behavior, and general advice for a farmer selling this crop in this region to maximize their profits. Use your extensive knowledge base to provide expert guidance."
                 display_prompt = f"**Query:** Provide market insights for **{crop}** in **{location}**."
             
             if actual_prompt:
