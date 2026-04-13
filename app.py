@@ -151,6 +151,23 @@ languages = {
 }
 selected_language_name = st.sidebar.selectbox("Display Language / भाषा", list(languages.keys()))
 
+# ---- LLM HELPER FUNCTIONS ----
+
+# Process Groq Audio to Text Transcriptions
+def transcribe_audio(audio_data):
+    if not audio_data:
+        return None
+    try:
+        transcription = client.audio.transcriptions.create(
+          file=("audio.wav", audio_data.read()),
+          model="whisper-large-v3", # Groq's high speed Whisper model
+          response_format="json"
+        )
+        return transcription.text
+    except Exception as e:
+        st.error(f"Voice Transcription Error: {e}")
+        return None
+
 def translate_text(text, target_language_name):
     if target_language_name == "English" or not text:
         return text
@@ -166,14 +183,10 @@ def generate_chat_response(full_messages, model="llama-3.3-70b-versatile"):
     response = client.chat.completions.create(model=model, messages=filtered_messages)
     return response.choices[0].message.content
 
-
 # Initializing temporary UI Chats
-if "crop_chat" not in st.session_state:
-    st.session_state.crop_chat = []
-if "market_chat" not in st.session_state:
-    st.session_state.market_chat = []
-if "scheme_chat" not in st.session_state:
-    st.session_state.scheme_chat = []
+if "crop_chat" not in st.session_state: st.session_state.crop_chat = []
+if "market_chat" not in st.session_state: st.session_state.market_chat = []
+if "scheme_chat" not in st.session_state: st.session_state.scheme_chat = []
 
 # Prepare tabs
 tabs_list = ["🍃 Crop Health Diagnosis", "📈 Market Price Insights", "🏛️ Government Schemes"]
@@ -196,11 +209,16 @@ with tabs[0]:
     if len(st.session_state.crop_chat) == 0:
         st.write("Upload a photo of your crop to begin your diagnostic session.")
         uploaded_file = st.file_uploader("Upload Crop Image...", type=["jpg", "jpeg", "png"])
-        query = st.text_input("Your question about the crop:", "What disease does this crop have and how can I treat it?", key="crop_initial_query")
         
-        if st.button("Diagnose Crop"):
-            if uploaded_file is not None and query:
-                with st.spinner("Analyzing image..."):
+        query = st.text_input("Your query about the crop:", "What disease does this crop have and how can I treat it?", key="crop_initial_query")
+        crop_audio = st.audio_input("🎤 Or record your question via Voice", key="crop_audio_init")
+        
+        if st.button("Diagnose Crop", type="primary"):
+            # Determine priority (Audio preferred if both filled)
+            actual_query = transcribe_audio(crop_audio) if crop_audio else query
+            
+            if uploaded_file is not None and actual_query:
+                with st.spinner("Analyzing image and query..."):
                     try:
                         img = Image.open(uploaded_file)
                         buffered = io.BytesIO()
@@ -209,7 +227,7 @@ with tabs[0]:
                         img.save(buffered, format="JPEG")
                         img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
                         
-                        full_prompt = f"You are an expert in diagnosing crop diseases.\nAnalyze the provided image and answer: {query}\nProvide a clear and actionable diagnosis."
+                        full_prompt = f"You are an expert in diagnosing crop diseases.\nAnalyze the provided image and answer: {actual_query}\nProvide a clear and actionable diagnosis."
                         system_msg = {
                             "role": "user",
                             "content": [{"type": "text", "text": full_prompt}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_str}"}}]
@@ -225,25 +243,28 @@ with tabs[0]:
                     except Exception as e:
                         st.error(f"Error: {e}")
             else:
-                st.warning("Please upload an image and provide a query.")
+                st.warning("Please upload an image and provide a text or voice query.")
     else:
-        st.info("Ask follow-up questions regarding the diagnosis.")
-        col1, col2 = st.columns([4, 1])
-        with col1:
-            follow_up = st.text_input("Your Follow-up:", key="crop_follow_up")
-        with col2:
-            send_btn = st.button("Send", key="crop_send", use_container_width=True)
+        st.info("Ask follow-up questions regarding the diagnosis below.")
+        
+        follow_up = st.text_input("Type your Follow-up:", key="crop_follow_up")
+        crop_audio_follow = st.audio_input("🎤 Or record Follow-up via Voice", key="crop_audio_follow")
+        send_btn = st.button("Send Follow-up", key="crop_send", use_container_width=True, type="primary")
             
-        if send_btn and follow_up:
-            with st.spinner("Generating answer..."):
-                st.session_state.crop_chat.append({"role": "user", "content": f"User's Question: {follow_up}"})
-                try:
-                    response_text = generate_chat_response(st.session_state.crop_chat, model="meta-llama/llama-4-scout-17b-16e-instruct")
-                    translated = translate_text(response_text, selected_language_name)
-                    st.session_state.crop_chat.append({"role": "assistant", "content": translated})
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Error: {e}")
+        if send_btn:
+            actual_follow_up = transcribe_audio(crop_audio_follow) if crop_audio_follow else follow_up
+            if actual_follow_up:
+                with st.spinner("Generating answer..."):
+                    st.session_state.crop_chat.append({"role": "user", "content": f"User's Question: {actual_follow_up}"})
+                    try:
+                        response_text = generate_chat_response(st.session_state.crop_chat, model="meta-llama/llama-4-scout-17b-16e-instruct")
+                        translated = translate_text(response_text, selected_language_name)
+                        st.session_state.crop_chat.append({"role": "assistant", "content": translated})
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+            else:
+                st.warning("Please type a message or record audio before sending.")
         
         if st.button("🗑️ Start New Diagnosis"):
             st.session_state.crop_chat = []
@@ -267,39 +288,55 @@ with tabs[1]:
         with col2:
             location = st.text_input("Location (District/State):")
         
-        if st.button("Get Initial Insights"):
-            if crop and location:
+        market_audio = st.audio_input("🎤 Or simply say your crop and location out loud", key="market_audio_init")
+        
+        if st.button("Get Initial Insights", type="primary"):
+            # Use transcription directly as the prompt if audio provided
+            transcribed = transcribe_audio(market_audio)
+            actual_prompt = ""
+            display_prompt = ""
+            
+            if transcribed:
+                actual_prompt = f"You are an expert agricultural market analyst. A farmer spoke the following: '{transcribed}'. \nPlease identify their crop and location, and provide a realistic estimate of typical historical price trends, harvesting season market behavior, and general advice for this region. Since real-time streaming API data is unavailable, use your extensive knowledge base to provide typical price ranges."
+                display_prompt = f"🎤 **Voice Query:** {transcribed}"
+            elif crop and location:
+                actual_prompt = f"You are an expert agricultural market analyst. A farmer is asking for recent market price trends for {crop} in {location}.\nPlease provide a realistic estimate of typical historical price trends, harvesting season market behavior, and general advice for a farmer selling this crop in this region to maximize their profits. Since real-time streaming API data is unavailable, use your extensive knowledge base to provide expert guidance and typical price ranges."
+                display_prompt = f"**Query:** Provide market insights for **{crop}** in **{location}**."
+            
+            if actual_prompt:
                 with st.spinner("Generating market insights..."):
-                    prompt = f"You are an expert agricultural market analyst. A farmer is asking for recent market price trends for {crop} in {location}.\nPlease provide a realistic estimate of typical historical price trends, harvesting season market behavior, and general advice for a farmer selling this crop in this region to maximize their profits. Since real-time streaming API data is unavailable, use your extensive knowledge base to provide expert guidance and typical price ranges."
                     try:
-                        response_text = generate_chat_response([{"role": "user", "content": prompt}])
+                        response_text = generate_chat_response([{"role": "user", "content": actual_prompt}])
                         translated = translate_text(response_text, selected_language_name)
                         
-                        st.session_state.market_chat.append({"role": "user", "content": prompt, "display": f"**Query:** Provide market insights for **{crop}** in **{location}**."})
+                        st.session_state.market_chat.append({"role": "user", "content": actual_prompt, "display": display_prompt})
                         st.session_state.market_chat.append({"role": "assistant", "content": translated})
                         st.rerun()
                     except Exception as e:
                         st.error(f"Error: {e}")
             else:
-                st.warning("Please enter both crop and location.")
+                st.warning("Please enter crop/location or record an audio message.")
     else:
         st.info("Ask follow-up questions about these market insights.")
-        col1, col2 = st.columns([4, 1])
-        with col1:
-            follow_up = st.text_input("Your Follow-up:", key="market_follow_up")
-        with col2:
-            send_btn = st.button("Send", key="market_send", use_container_width=True)
+        
+        follow_up = st.text_input("Type your Follow-up:", key="market_follow_up")
+        market_audio_follow = st.audio_input("🎤 Or record Follow-up via Voice", key="market_audio_follow")
+        send_btn = st.button("Send Follow-up", key="market_send", use_container_width=True, type="primary")
             
-        if send_btn and follow_up:
-            with st.spinner("Thinking..."):
-                st.session_state.market_chat.append({"role": "user", "content": follow_up, "display": follow_up})
-                try:
-                    response_text = generate_chat_response(st.session_state.market_chat)
-                    translated = translate_text(response_text, selected_language_name)
-                    st.session_state.market_chat.append({"role": "assistant", "content": translated})
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Error: {e}")
+        if send_btn:
+            actual_follow_up = transcribe_audio(market_audio_follow) if market_audio_follow else follow_up
+            if actual_follow_up:
+                with st.spinner("Thinking..."):
+                    st.session_state.market_chat.append({"role": "user", "content": actual_follow_up, "display": ("🎤 " if market_audio_follow else "") + actual_follow_up})
+                    try:
+                        response_text = generate_chat_response(st.session_state.market_chat)
+                        translated = translate_text(response_text, selected_language_name)
+                        st.session_state.market_chat.append({"role": "assistant", "content": translated})
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+            else:
+                st.warning("Please type or speak a question first.")
         
         if st.button("🗑️ Start New Market Inquiry"):
             st.session_state.market_chat = []
@@ -319,40 +356,54 @@ with tabs[2]:
          st.write("Ask questions about government agricultural schemes.")
          scheme_name = st.text_input("Scheme Name (e.g., PM-KISAN, Fasal Bima Yojana):")
          scheme_query = st.text_input("Your specific query:", "What are the eligibility criteria and benefits?")
+         scheme_audio = st.audio_input("🎤 Or record your question regarding a scheme", key="scheme_audio_init")
          
-         if st.button("Get Scheme Summary"):
-             if scheme_name and scheme_query:
+         if st.button("Get Scheme Summary", type="primary"):
+             transcribed = transcribe_audio(scheme_audio)
+             actual_prompt = ""
+             display_prompt = ""
+             
+             if transcribed:
+                  actual_prompt = f"You are an expert in Indian government agricultural schemes. A farmer asked the following via voice: '{transcribed}'. \nProvide a concise and easy-to-understand summary of the scheme they are inquiring about, including key benefits and eligibility criteria."
+                  display_prompt = f"🎤 **Voice Query:** {transcribed}"
+             elif scheme_name and scheme_query:
+                  actual_prompt = f"You are an expert in Indian government agricultural schemes. You will provide a simplified summary of the scheme based on the user's query.\nScheme Name: {scheme_name}\nQuery: {scheme_query}\nProvide a concise and easy-to-understand summary of the scheme, including key benefits and eligibility criteria, tailored to the farmer's query."
+                  display_prompt = f"**Query:** {scheme_query} (Regarding **{scheme_name}**)"
+             
+             if actual_prompt:
                  with st.spinner("Summarizing..."):
-                     prompt = f"You are an expert in Indian government agricultural schemes. You will provide a simplified summary of the scheme based on the user's query.\nScheme Name: {scheme_name}\nQuery: {scheme_query}\nProvide a concise and easy-to-understand summary of the scheme, including key benefits and eligibility criteria, tailored to the farmer's query."
                      try:
-                         response_text = generate_chat_response([{"role": "user", "content": prompt}])
+                         response_text = generate_chat_response([{"role": "user", "content": actual_prompt}])
                          translated = translate_text(response_text, selected_language_name)
                          
-                         st.session_state.scheme_chat.append({"role": "user", "content": prompt, "display": f"**Query:** {scheme_query} (Regarding **{scheme_name}**)"})
+                         st.session_state.scheme_chat.append({"role": "user", "content": actual_prompt, "display": display_prompt})
                          st.session_state.scheme_chat.append({"role": "assistant", "content": translated})
                          st.rerun()
                      except Exception as e:
                          st.error(f"Error: {e}")
              else:
-                 st.warning("Please enter a scheme name and a query.")
+                 st.warning("Please enter a scheme name and query, or record a voice message.")
     else:
         st.info("Ask follow-up questions about this scheme.")
-        col1, col2 = st.columns([4, 1])
-        with col1:
-            follow_up = st.text_input("Your Follow-up:", key="scheme_follow_up")
-        with col2:
-            send_btn = st.button("Send", key="scheme_send", use_container_width=True)
+        
+        follow_up = st.text_input("Type your Follow-up:", key="scheme_follow_up")
+        scheme_audio_follow = st.audio_input("🎤 Or record Follow-up via Voice", key="scheme_audio_follow")
+        send_btn = st.button("Send Follow-up", key="scheme_send", use_container_width=True, type="primary")
             
-        if send_btn and follow_up:
-            with st.spinner("Thinking..."):
-                st.session_state.scheme_chat.append({"role": "user", "content": follow_up, "display": follow_up})
-                try:
-                    response_text = generate_chat_response(st.session_state.scheme_chat)
-                    translated = translate_text(response_text, selected_language_name)
-                    st.session_state.scheme_chat.append({"role": "assistant", "content": translated})
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Error: {e}")
+        if send_btn:
+            actual_follow_up = transcribe_audio(scheme_audio_follow) if scheme_audio_follow else follow_up
+            if actual_follow_up:
+                with st.spinner("Thinking..."):
+                    st.session_state.scheme_chat.append({"role": "user", "content": actual_follow_up, "display": ("🎤 " if scheme_audio_follow else "") + actual_follow_up})
+                    try:
+                        response_text = generate_chat_response(st.session_state.scheme_chat)
+                        translated = translate_text(response_text, selected_language_name)
+                        st.session_state.scheme_chat.append({"role": "assistant", "content": translated})
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+            else:
+                 st.warning("Please type or speak a question first.")
                         
         if st.button("🗑️ Start New Scheme Inquiry"):
             st.session_state.scheme_chat = []
@@ -372,7 +423,7 @@ if st.session_state["role"] == "admin":
         col1, col2 = st.columns(2)
         with col1:
             selected_farmer = st.selectbox("Select User's Account:", farmers)
-            if st.button("Grant Password Reset Access"):
+            if st.button("Grant Password Reset Access", type="primary"):
                 users[selected_farmer]["reset_required"] = True
                 save_users(users)
                 st.success(f"Granted password reset permission to `{selected_farmer}` successfully! When they try to login, they will be forced to change their password securely.")
