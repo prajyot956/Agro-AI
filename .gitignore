@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Environment Variables & Secrets
+.env
+.streamlit/
+
+# Local Databases (Do not commit to public repositories)
+users.json
+logs.json
